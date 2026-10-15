@@ -28,7 +28,7 @@ export class FirmwareAnalysisService {
     input: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
-    if (options?.signal?.aborted === true)
+    if (options?.signal?.aborted)
       return err(new AnalysisCancelledError(operation));
     const parsed = firmwareRequestSchema.safeParse({ operation, input });
     if (!parsed.success)
@@ -43,16 +43,23 @@ export class FirmwareAnalysisService {
           "Firmware execution did not bind its source artifact",
         ),
       );
-    return ok(
-      createEvidence(execution.subject, execution.provider, {
-        operation,
-        parameters: jsonObjectSchema.parse(parsed.data.input),
-        result: execution.result,
-        rawResult: execution.rawResult,
-        locations: execution.locations,
-        limitations: execution.limitations,
-        confidence: "observed",
-      }),
-    );
+    const evidence = createEvidence(execution.subject, execution.provider, {
+      operation,
+      parameters: jsonObjectSchema.parse(parsed.data.input),
+      result: execution.result,
+      rawResult: execution.rawResult,
+      locations: execution.locations,
+      limitations: execution.limitations,
+      confidence: "observed",
+    });
+    // The engine may finish after the caller cancelled, so the signal is
+    // rechecked once the Evidence exists; the completed observation travels
+    // with the cancellation as its partial observation instead of being
+    // reported as a success the caller no longer wants (morluto/rea#3923).
+    if (options?.signal?.aborted)
+      return err(
+        new AnalysisCancelledError(operation, { partialObservation: evidence }),
+      );
+    return ok(evidence);
   }
 }

@@ -91,8 +91,7 @@ const nativeFixture = () => {
       await controls.create();
       let destroyed = false;
       let listener:
-        | ((message: FridaMessage, data: Buffer | null) => void)
-        | undefined;
+        ((message: FridaMessage, data: Buffer | null) => void) | undefined;
       const script: Script = {
         get isDestroyed() {
           return destroyed;
@@ -624,6 +623,42 @@ it.each(["create", "load"] as const)(
     });
   },
 );
+
+// Cancellation followed by a native rejection used to surface as an ordinary
+// provider failure with no load record (morluto/rea#3979).
+it("retains the cancelled load observation when native loading rejects after cancellation", async () => {
+  const { fixture, id, held } = await scriptLoadFixture("load");
+  fixture.controls.load = async () => {
+    await held.wait();
+    throw new Error("native load rejected");
+  };
+  const controller = new AbortController();
+  const cancelled = fixture.load(id, "cancelled-rejected", controller.signal);
+  const rejected = expect(cancelled).rejects.toThrow("cancel native operation");
+  await held.entered;
+  controller.abort(new Error("cancel native operation"));
+  await fixture.client.ping();
+  await rejected;
+  held.release();
+  await fixture.client.ping();
+  fixture.controls.load = async () => {};
+  await fixture.load(id, "barrier");
+  await fixture.client.ping();
+  expect(fixture.unloaded).toEqual(["cancelled-rejected"]);
+  expect(fixture.loaded).toEqual(["original", "barrier"]);
+  expect(fixture.controls.detachCalls).toBe(0);
+  expect(fixture.manager.status(id)?.scripts).toHaveLength(2);
+  const observation = await retainedScriptObservation(
+    fixture,
+    id,
+    "cancelled-rejected",
+  );
+  expect(observation).toMatchObject({
+    messages: [],
+    script_cleanup: "released",
+    cleanup_error: null,
+  });
+});
 
 it("awaits an admitted attach on server shutdown and retries failed native cleanup", async () => {
   const fixture = await connectedFixture();

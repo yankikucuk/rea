@@ -465,10 +465,54 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
       return ok(observation);
     } catch (cause: unknown) {
       const entry = managed.scripts.get(scriptId);
+      // Releasing the script drops its message buffer, so the facts observed
+      // before the rejection are read first.
+      const observedMessages =
+        managed.messagesByScript.get(scriptId)?.toArray() ?? [];
+      const observedTruncated = managed.truncatedScripts.has(scriptId);
       const cleanupReason =
         entry === undefined
           ? undefined
           : await this.#releaseScript(managed, entry);
+      // A rejection after cancellation ends a load the caller already gave
+      // up on, so the result is the cancellation with the facts observed so
+      // far; the native failure is kept as a diagnostic (morluto/rea#3979).
+      if (signal?.aborted) {
+        const diagnostics = {
+          native_load_failure: sanitizeError(cause, managed.remote),
+        };
+        if (entry === undefined) {
+          managed.messagesByScript.delete(scriptId);
+          return err(
+            new AnalysisCancelledError("load_frida_script", {
+              cause: signal.reason,
+              diagnostics,
+            }),
+          );
+        }
+        const observation: FridaScriptObservation = {
+          scriptId,
+          sourceKind: source.sourceKind,
+          sourcePath: source.sourceKind === "file" ? source.path : null,
+          sourceSha256,
+          messages: observedMessages,
+          messagesTruncated: observedTruncated,
+        };
+        return err(
+          new FridaScriptLoadCancelledError(observation, {
+            cause: signal.reason,
+            diagnostics,
+            ...(cleanupReason === undefined
+              ? {}
+              : {
+                  cleanup: {
+                    reason: cleanupReason,
+                    resources: [sessionId, scriptId],
+                  },
+                }),
+          }),
+        );
+      }
       managed.messagesByScript.delete(scriptId);
       return err(
         providerError(

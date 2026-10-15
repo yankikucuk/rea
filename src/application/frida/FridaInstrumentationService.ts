@@ -486,6 +486,7 @@ const cancelledScriptEvidence = (
   new AnalysisCancelledError(error.operation, {
     cause: error.cause,
     cleanup: error.cleanup,
+    diagnostics: error.diagnostics,
     partialObservation: fridaEvidence(
       error.operation,
       {

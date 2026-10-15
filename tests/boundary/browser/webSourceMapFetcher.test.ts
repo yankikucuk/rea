@@ -1102,6 +1102,18 @@ describe("source-map dependency coverage of hard-to-parse sources", () => {
       'import lib = require("./lib.js");',
       ["./lib.js"],
     ],
+    // The compiler erases a type-only import-equals like a whole-statement
+    // type-only import (morluto/rea#3932).
+    [
+      "type-only TypeScript import equals",
+      'import type lib = require("./lib.js");',
+      [],
+    ],
+    [
+      "a value import equals beside a type-only one",
+      'import type types = require("./types.js");\nimport lib = require("./lib.js");',
+      ["./lib.js"],
+    ],
     [
       "whole-statement type-only import",
       'import type { Value } from "./types.js";',

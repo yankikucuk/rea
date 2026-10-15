@@ -28,16 +28,10 @@ import {
 } from "@babel/types";
 
 type ReferenceSourceImportKind =
-  | "imports"
-  | "requires"
-  | "references"
-  | "declares-module";
+  "imports" | "requires" | "references" | "declares-module";
 
 type ReferenceSourceImportResolution =
-  | "internal"
-  | "external"
-  | "unresolved"
-  | "unknown";
+  "internal" | "external" | "unresolved" | "unknown";
 
 type ReferenceSourceImportParseState = "parsed" | "partial" | "unknown";
 
@@ -166,7 +160,12 @@ const extractImportDeclarations = (
 
     if (isTSImportEqualsDeclaration(statement)) {
       const reference = statement.moduleReference;
-      if (isTSExternalModuleReference(reference)) {
+      // `import type x = require("m")` is erased by the compiler and loads
+      // nothing, like a whole-statement type-only import (morluto/rea#3932).
+      if (
+        statement.importKind !== "type" &&
+        isTSExternalModuleReference(reference)
+      ) {
         appendRelationship(relationships, {
           fromPath: from_path,
           to: safeModuleName(reference.expression),

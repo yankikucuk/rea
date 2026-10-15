@@ -1102,9 +1102,11 @@ const originalDependency = (
   // `import x = require("m")` is only legal at module top level and always
   // refers to the host loader, so it needs no unbound-`require` check. The
   // `moduleReference` is an entity name for a local alias instead, which
-  // declares no dependency.
+  // declares no dependency. `import type x = require("m")` is erased by the
+  // compiler like a whole-statement type-only import (morluto/rea#3932).
   if (
     t.isTSImportEqualsDeclaration(node) &&
+    node.importKind !== "type" &&
     t.isTSExternalModuleReference(node.moduleReference)
   )
     return {

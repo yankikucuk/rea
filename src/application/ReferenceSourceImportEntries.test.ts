@@ -64,6 +64,48 @@ it("keeps a failed regular file as file kind", () => {
   });
 });
 
+// `import type x = require("m")` is erased by the compiler and loads nothing;
+// only the value form is a dependency (morluto/rea#3932).
+it("records a value import-equals dependency and ignores the type-only form", () => {
+  const files = [
+    [
+      "src/main.ts",
+      'import type Types = require("./types");\nimport lib = require("./lib");\n',
+    ],
+    ["src/types.ts", "export type Value = number;\n"],
+    ["src/lib.ts", "export const value = 1;\n"],
+  ] as const;
+  const read: ReferenceSourceRead = {
+    root: "/selected/source",
+    entries: files.map(([path, content]) => ({
+      status: "read",
+      kind: "file",
+      path,
+      bytes: Buffer.from(content),
+      size: Buffer.byteLength(content),
+    })),
+    bytesRead: files.reduce(
+      (sum, [, content]) => sum + Buffer.byteLength(content),
+      0,
+    ),
+    limitations: [],
+  };
+  const parsed = parseReferenceSourceEntries(
+    read,
+    new Set(files.map(([path]) => path)),
+  );
+  expect(parsed.parseFailures).toEqual([]);
+  expect(parsed.relationships).toEqual([
+    {
+      from_path: "src/main.ts",
+      to: "src/lib.ts",
+      kind: "requires",
+      resolution: "internal",
+      parse_state: "parsed",
+    },
+  ]);
+});
+
 it("retains Kotlin source identity and language across the inventory projection", () => {
   const files = [
     [

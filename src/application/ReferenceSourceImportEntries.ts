@@ -246,9 +246,14 @@ const appendFile = (
       output.relationships.push(relationship);
       continue;
     }
+    const request = internalRequestPath(relationship);
+    if (request === undefined) {
+      output.relationships.push({ ...relationship, resolution: "unresolved" });
+      continue;
+    }
     const resolved = resolveInternalSpecifier(
       relationship.from_path,
-      relationship.to,
+      request,
       context,
     );
     output.relationships.push({
@@ -258,6 +263,24 @@ const appendFile = (
     });
   }
   output.parseFailures.push(...parsed.parse_failures);
+};
+
+/**
+ * The filesystem request an internal specifier selects. ESM `import`
+ * declarations and `import()` are URLs: Node resolves the pathname and keeps
+ * `?query` and `#fragment` as URL components, so they are not filename bytes
+ * (morluto/rea#3916). CommonJS `require` takes the specifier as a path, where
+ * those characters are ordinary name bytes.
+ */
+const internalRequestPath = (relationship: {
+  readonly kind: string;
+  readonly to: string;
+}): string | undefined => {
+  if (relationship.kind !== "imports") return relationship.to;
+  const suffix = relationship.to.search(/[?#]/u);
+  const pathname =
+    suffix === -1 ? relationship.to : relationship.to.slice(0, suffix);
+  return pathname === "" ? undefined : pathname;
 };
 
 const appendReadEntry = (

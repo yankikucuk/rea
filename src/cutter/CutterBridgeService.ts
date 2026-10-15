@@ -17,7 +17,9 @@ import {
 import { CUTTER_PROVIDER_IDENTITY } from "./CutterBridgeClient.js";
 
 interface CutterBridgePort {
-  listSessions(): Promise<CutterBridgeDiscovery>;
+  listSessions(options?: {
+    readonly signal?: AbortSignal;
+  }): Promise<CutterBridgeDiscovery>;
   confirmCommandCompletion?(
     sessionId: string,
     requestId: string,
@@ -74,8 +76,10 @@ export class CutterBridgeService {
     return ok(null);
   }
 
-  listSessions(): Promise<CutterBridgeDiscovery> {
-    return this.client.listSessions();
+  listSessions(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<CutterBridgeDiscovery> {
+    return this.client.listSessions(options);
   }
 
   async execute(

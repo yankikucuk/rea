@@ -81,6 +81,65 @@ it("propagates MCP cancellation into an active Cutter command and reports uncert
   }
 });
 
+it("hands the MCP request signal to Cutter session discovery", async () => {
+  let observedSignal: AbortSignal | undefined;
+  let release: (() => void) | undefined;
+  const service = new CutterBridgeService({
+    listSessions: async ({ signal } = {}) => {
+      observedSignal = signal;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        sessions: [],
+        bridge_directory: "/private/bridge",
+        discovery_status: "no_live_bridge_found" as const,
+        bridge_directory_security: "private_verified" as const,
+      };
+    },
+    execute: async () => {
+      throw new Error("unused");
+    },
+  });
+  const server = new McpServer({
+    name: "cutter-discovery-cancel",
+    version: "1",
+  });
+  registerCutterTools(
+    server,
+    service,
+    silentLogger,
+    createToolResultDelivery(undefined),
+  );
+  const client = new Client({ name: "cutter-discovery-cancel", version: "1" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const controller = new AbortController();
+    const pending = client
+      .callTool(
+        { name: "list_cutter_sessions", arguments: {} },
+        { signal: controller.signal },
+      )
+      .catch((cause: unknown) => cause);
+    const deadline = Date.now() + 2_000;
+    while (observedSignal === undefined && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(observedSignal).toBeDefined();
+    expect(observedSignal?.aborted).toBe(false);
+    controller.abort(new Error("cancel discovery"));
+    await pending;
+    expect(observedSignal?.aborted).toBe(true);
+  } finally {
+    release?.();
+    await client.close();
+    await server.close();
+  }
+});
+
 it("shares one cleanup proof across concurrent Cutter MCP commands without BinarySession", async () => {
   let releaseProof!: () => void;
   let enterProof!: () => void;

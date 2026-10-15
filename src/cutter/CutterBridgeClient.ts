@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import {
+  AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
   AnalysisOutputError,
   AnalysisResourceConstraintError,
@@ -164,17 +165,20 @@ class CutterBridgeResponseFrames {
   }
 }
 
+// A cancelled request stops admitting queued work; probes already running
+// observe the same signal through their socket request (morluto/rea#3946).
 const mapDiscovery = async <Input, Output>(
   inputs: readonly Input[],
   operation: (input: Input) => Promise<Output>,
-): Promise<Output[]> => {
-  const results = new Array<Output>(inputs.length);
+  signal?: AbortSignal,
+): Promise<(Output | undefined)[]> => {
+  const results = new Array<Output | undefined>(inputs.length);
   let next = 0;
   await Promise.all(
     Array.from(
       { length: Math.min(inputs.length, DISCOVERY_CONCURRENCY) },
       async () => {
-        while (next < inputs.length) {
+        while (next < inputs.length && signal?.aborted !== true) {
           const index = next++;
           results[index] = await operation(inputs[index]!);
         }
@@ -184,10 +188,7 @@ const mapDiscovery = async <Input, Output>(
   return results;
 };
 export type CutterBridgeExecutionState =
-  | "not_started"
-  | "complete"
-  | "failed"
-  | "unknown";
+  "not_started" | "complete" | "failed" | "unknown";
 export interface CutterBridgeExecution {
   readonly requestId: string;
   readonly output: unknown;
@@ -286,7 +287,11 @@ export class CutterBridgeClient {
     );
   }
 
-  async listSessions(): Promise<CutterBridgeDiscovery> {
+  async listSessions(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<CutterBridgeDiscovery> {
+    const { signal } = options;
+    signal?.throwIfAborted();
     const loaded = await this.#readDescriptors();
     if (loaded.error !== undefined)
       return {
@@ -306,6 +311,7 @@ export class CutterBridgeClient {
                 kind: "status",
                 session_id: descriptor.session_id,
               }),
+              signal,
             ),
           );
           if (
@@ -331,7 +337,13 @@ export class CutterBridgeClient {
           return undefined;
         }
       },
+      signal,
     );
+    // Probes that were cut short or never started cannot establish absence.
+    if (signal?.aborted === true)
+      throw new AnalysisCancelledError("list_cutter_sessions", {
+        cause: signal.reason,
+      });
     const sessions = descriptors.filter(
       (value): value is CutterBridgeSession => value !== undefined,
     );
@@ -669,9 +681,7 @@ export class CutterBridgeClient {
         error: "bridge_directory_insecure",
       };
     let security:
-      | "private_verified"
-      | "not_private"
-      | "unverified_platform_acl" = posix
+      "private_verified" | "not_private" | "unverified_platform_acl" = posix
       ? "private_verified"
       : "unverified_platform_acl";
     const windowsPrivateReader = this.#windowsPrivateReader;

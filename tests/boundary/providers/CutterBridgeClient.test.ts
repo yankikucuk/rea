@@ -470,6 +470,53 @@ describe("CutterBridgeClient: scenario group 2", () => {
     });
   });
 
+  // Discovery used to discard the request signal: cancelled probes stayed
+  // connected until their 25 s timeout and queued probes still started
+  // (morluto/rea#3946).
+  it("stops active and queued probes when discovery is cancelled", async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-cutter-cancel-discovery-"));
+    const token = "synthetic-cutter-bridge-token-for-test";
+    const sockets = new Set<import("node:net").Socket>();
+    let accepted = 0;
+    server = createServer((connection) => {
+      accepted += 1;
+      sockets.add(connection);
+      connection.on("close", () => sockets.delete(connection));
+      connection.on("error", () => undefined);
+      // A silent peer: reads but never answers, so it observes the close.
+      connection.resume();
+    });
+    const port = await listen(server);
+    for (let index = 1; index <= 9; index += 1)
+      await writeDescriptor(
+        directory,
+        `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        port,
+        token,
+      );
+    const controller = new AbortController();
+    const discovery = createClient({
+      REA_CUTTER_BRIDGE_DIR: directory,
+    }).listSessions({ signal: controller.signal });
+    const deadline = Date.now() + 5_000;
+    while (accepted < 8) {
+      if (Date.now() > deadline) throw new Error("probes did not connect");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    controller.abort(new Error("cancel discovery"));
+    const started = performance.now();
+    await expect(discovery).rejects.toMatchObject({
+      _tag: "AnalysisCancelledError",
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    const settle = Date.now() + 2_000;
+    while (sockets.size > 0 && Date.now() < settle)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sockets.size).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(accepted).toBe(8);
+  });
+
   it("omits invalid, unresponsive, and mismatched bridge descriptors", async () => {
     directory = await mkdtemp(
       join(tmpdir(), "rea-cutter-invalid-descriptors-"),

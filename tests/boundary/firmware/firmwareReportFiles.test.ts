@@ -1,10 +1,13 @@
+import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { expect, it } from "vitest";
 
 import {
   inventoryFirmwareOutput,
   readFirmwareReport,
+  snapshotFirmware,
 } from "../../../src/firmware/FirmwareFiles.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
@@ -65,3 +68,41 @@ it("orders extracted firmware paths by code point independently of host locale",
     "\u00e4.bin",
   ]);
 });
+
+// A caller-selected FIFO without a writer must not block the firmware
+// snapshot before its regular-file check; the rejection has to settle on its
+// own and honour the request signal (morluto/rea#3887).
+it.skipIf(process.platform === "win32")(
+  "rejects a named-pipe firmware input promptly instead of blocking on open",
+  async () => {
+    const root = await createTestTempDirectory("rea-firmware-fifo-");
+    const fifo = join(root, "input.fifo");
+    await promisify(execFile)("mkfifo", [fifo]);
+    const regular = join(root, "input.bin");
+    await writeFile(regular, "firmware");
+    const settled = await Promise.race([
+      snapshotFirmware(
+        { operation: "inspect_firmware_regions", input: { path: fifo } },
+        join(root, "fifo-root"),
+        AbortSignal.timeout(5_000),
+      ).then(
+        () => "fulfilled",
+        (cause: unknown) => cause,
+      ),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("pending"), 2_000),
+      ),
+    ]);
+    expect(settled).toMatchObject({
+      _tag: "AnalysisInputError",
+      operation: "inspect_firmware_regions",
+    });
+    await mkdir(join(root, "regular-root"));
+    const snapshot = await snapshotFirmware(
+      { operation: "inspect_firmware_regions", input: { path: regular } },
+      join(root, "regular-root"),
+      AbortSignal.timeout(5_000),
+    );
+    expect(snapshot.size).toBe(8);
+  },
+);

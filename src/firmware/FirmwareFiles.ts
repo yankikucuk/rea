@@ -18,6 +18,10 @@ import {
 } from "../domain/analysisErrorCore.js";
 import type { FirmwareRequest } from "../domain/firmware/firmwareAnalysis.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
+import {
+  NonRegularFileReadError,
+  openRegularFile,
+} from "../filesystem/RegularFile.js";
 import { FIRMWARE_LIMITS } from "./FirmwareRelease.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 
@@ -65,7 +69,25 @@ export const snapshotFirmware = async (
 ) => {
   const sourcePath = resolve(request.input.path);
   const source = await realpath(sourcePath);
-  const handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const inputRejected = () =>
+    new AnalysisInputError(request.operation, undefined, [
+      {
+        path: ["path"],
+        reason: "out_of_range",
+        message: `Firmware must be a nonempty regular file no larger than ${FIRMWARE_LIMITS.inputBytes} bytes`,
+      },
+    ]);
+  // Admit the selected file through the shared nonblocking opener: a plain
+  // read-only open of a caller-selected FIFO without a writer never returns
+  // and ignores the request signal, so the regular-file check below was
+  // never reached (morluto/rea#3887).
+  const handle = await openRegularFile(source, {
+    symlinks: "reject",
+    signal,
+  }).catch((cause: unknown) => {
+    if (cause instanceof NonRegularFileReadError) throw inputRejected();
+    throw cause;
+  });
   const fullPath = join(root, "firmware.bin");
   const hash = createHash("sha256");
   let size = 0;
@@ -76,13 +98,7 @@ export const snapshotFirmware = async (
       stat.size === 0 ||
       stat.size > FIRMWARE_LIMITS.inputBytes
     )
-      throw new AnalysisInputError(request.operation, undefined, [
-        {
-          path: ["path"],
-          reason: "out_of_range",
-          message: `Firmware must be a nonempty regular file no larger than ${FIRMWARE_LIMITS.inputBytes} bytes`,
-        },
-      ]);
+      throw inputRejected();
     const meter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         size += chunk.length;

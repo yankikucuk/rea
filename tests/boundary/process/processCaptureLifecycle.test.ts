@@ -22,6 +22,10 @@ import {
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { snapshotRoots } from "../../../src/process/capture/FilesystemSnapshot.js";
 import { ProcessCaptureError } from "../../../src/process/capture/ProcessCaptureError.js";
+import {
+  cleanupOwnedProcessGroup,
+  verifyNoTokenOwnedProcesses,
+} from "../../../src/process/ProcessOwnership.js";
 import { expectUnverifiedHostCleanup } from "../../support/hostCleanup.js";
 import {
   type ProcessCaptureCleanupHost,
@@ -596,6 +600,53 @@ itWithCaptureCapability(
     );
     if (cancelled.ok) throw new Error("expected cancellation");
     expect(cancelled.error.message).toContain("cancelled");
+  },
+);
+
+// A SIGINT that lands while the capture root is being removed used to publish
+// ordinary successful Evidence after cleanup settled (morluto/rea#4005).
+itWithCaptureCapability(
+  "returns cancelled with the completed capture when cancellation lands during cleanup",
+  async () => {
+    const controller = new AbortController();
+    const cleanupHost: ProcessCaptureCleanupHost = {
+      platform: process.platform,
+      cleanupProcessGroup: cleanupOwnedProcessGroup,
+      verifyTokenOwnedProcesses: verifyNoTokenOwnedProcesses,
+      removeTemporaryRoot: async (path) => {
+        controller.abort();
+        await rm(path, { recursive: true, force: true });
+      },
+    };
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: ["-e", "console.log('done')"],
+        settle_ms: 0,
+        timeout_ms: 5_000,
+        idle_timeout_ms: 5_000,
+      }),
+      controller.signal,
+      process.platform,
+      process.env,
+      undefined,
+      cleanupHost,
+    );
+    if (result.ok) throw new Error("expected a cancelled result");
+    if (!(result.error instanceof ProcessCaptureError)) throw result.error;
+    expect(result.error.reason).toBe("cancelled");
+    expect(result.error.userCategory).toBe("cancelled");
+    const projected = projectAnalysisError(result.error);
+    expect(projected).toMatchObject({
+      code: "cancelled",
+      details: { cleanup: "complete" },
+    });
+    const partial = result.error.partialObservation;
+    expect(partial).toBeDefined();
+    if (partial === undefined || !("capture" in partial))
+      throw new Error("expected the completed capture as partial observation");
+    expect(partial.capture.exit).toMatchObject({ reason: "exited", code: 0 });
+    expect(partial.capture.settlement.cleanup_outcome).not.toBe("failed");
   },
 );
 

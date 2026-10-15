@@ -377,6 +377,7 @@ const finishProcessRun = async (options: {
   readonly progress: ProcessCaptureProgressTracker;
   readonly progressCounts: () => ProcessCaptureProgressCounts;
   readonly resourceScope?: ProcessCaptureResourceScope;
+  readonly signal?: AbortSignal;
 }): Promise<ProcessCapture> => {
   options.progress.closeLive();
   await options.stopSampler();
@@ -401,6 +402,13 @@ const finishProcessRun = async (options: {
     options.resourceScope === undefined
       ? await releaseProcessResources(cleanupOptions)
       : await options.resourceScope.release(cleanupOptions);
+  // A cancellation that lands while owned resources are released must not
+  // publish success once cleanup settles (morluto/rea#4005). The completed
+  // capture stays available as the partial observation of the cancelled run.
+  const executionFailure =
+    options.executionFailure === undefined && options.signal?.aborted === true
+      ? processCaptureCancelled()
+      : options.executionFailure;
   const observedExit =
     options.observations?.exit.state === "available"
       ? options.observations.exit.value.reason
@@ -409,14 +417,12 @@ const finishProcessRun = async (options: {
     phase: "cleanup",
     counts: options.progressCounts(),
     terminal: true,
-    disposition: captureProgressDisposition(
-      observedExit,
-      options.executionFailure,
-    ),
+    disposition: captureProgressDisposition(observedExit, executionFailure),
     cleanup,
   });
   const cleanupFailure = cleanupReportFailure(cleanup);
-  let { capture, executionFailure } = options;
+  let { capture } = options;
+  let resultFailure = executionFailure;
   let verifiedCapture: ProcessCapture | undefined;
   if (capture !== undefined && cleanupFailure === undefined) {
     const settlement: UnverifiedProcessCapture["settlement"] =
@@ -434,7 +440,7 @@ const finishProcessRun = async (options: {
     try {
       verifiedCapture = parseProcessCapture(completedCapture);
     } catch (cause: unknown) {
-      executionFailure = new ProcessCaptureError(
+      resultFailure = new ProcessCaptureError(
         `process capture validation failed${cause instanceof Error ? `: ${cause.message}` : ""}`,
         { cause },
       );
@@ -447,7 +453,7 @@ const finishProcessRun = async (options: {
       : { scenario: options.scenario, rootPid };
   return resolveProcessResult(
     cleanupFailure === undefined ? verifiedCapture : capture,
-    executionFailure,
+    resultFailure,
     cleanup,
     options.observations,
     partialContext,
@@ -830,6 +836,7 @@ const runProcessScenario = async (
     progress: progressTracker,
     progressCounts,
     ...(resourceScope === undefined ? {} : { resourceScope }),
+    ...(signal === undefined ? {} : { signal }),
   });
 };
 

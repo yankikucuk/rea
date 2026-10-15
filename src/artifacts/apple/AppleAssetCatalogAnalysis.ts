@@ -102,6 +102,18 @@ export const analyzeAppleAssetCatalogs = async (input: {
   };
 };
 
+const ASSET_CATALOG_FILE_NAME = "Assets.car";
+
+/**
+ * A compiled catalog is an entry whose own name is `Assets.car`, at any depth.
+ * Matching the path suffix instead admitted unrelated entries such as a
+ * `NotAssets.car` directory and turned a supported empty inventory into a
+ * skipped-catalog failure (morluto/rea#3914). Reader paths use `/`.
+ */
+const isAssetCatalogPath = (path: string): boolean =>
+  path === ASSET_CATALOG_FILE_NAME ||
+  path.endsWith(`/${ASSET_CATALOG_FILE_NAME}`);
+
 /** Inspect every regular Assets.car in the bundle; non-file entries are listed. */
 const collectAssetCatalogs = async (input: {
   readonly bundlePath: string;
@@ -122,7 +134,7 @@ const collectAssetCatalogs = async (input: {
   let totalMetadataBytes = 0;
   try {
     for await (const entry of reader.entries(input.signal)) {
-      if (!entry.path.endsWith("Assets.car")) continue;
+      if (!isAssetCatalogPath(entry.path)) continue;
       if (entry.kind !== "file") {
         uninspected.push(`${entry.path} (${entry.kind})`);
         continue;

@@ -294,3 +294,57 @@ describe("Apple asset catalog and Interface Builder concurrency", () => {
     await expect(analysis).rejects.toThrow("interface builder failed");
   });
 });
+
+describe("Apple asset catalog candidate selection", () => {
+  // Only an entry named exactly `Assets.car` is a catalog candidate; a suffix
+  // match admitted unrelated names and blocked the empty inventory
+  // (morluto/rea#3914).
+  it("ignores an unrelated directory whose name merely ends in Assets.car", async () => {
+    const bundle = await createTestTempDirectory(
+      "rea-asset-catalog-notassets-",
+    );
+    await mkdir(join(bundle, "Contents", "Resources", "NotAssets.car"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(bundle, "Contents", "Resources", "NotAssets.car.txt"),
+      "",
+    );
+    const result = await analyzeAppleAssetCatalogs({
+      environment: {},
+      bundlePath: bundle,
+      targetSha256: "a".repeat(64),
+      runAssetUtil: () => {
+        throw new Error("assetutil must not run without a catalog");
+      },
+    });
+    expect(result).toMatchObject({
+      catalogs: [],
+      total_records: 0,
+      records: [],
+    });
+    expect(result.limitations).toContain(
+      "No compiled Assets.car catalog was found among the app bundle's regular files (symlinks are not followed); any resource keys are reported as unmatched.",
+    );
+  });
+
+  it("still reports a directory named exactly Assets.car as uninspected", async () => {
+    const bundle = await createTestTempDirectory("rea-asset-catalog-dir-");
+    await mkdir(join(bundle, "Contents", "Resources", "Assets.car"), {
+      recursive: true,
+    });
+    const rejected = await analyzeAppleAssetCatalogs({
+      environment: {},
+      bundlePath: bundle,
+      targetSha256: "a".repeat(64),
+      runAssetUtil: () => Promise.resolve("[]"),
+    }).catch((cause: unknown) => cause);
+    expect(rejected).toBeInstanceOf(ArtifactReaderFailure);
+    expect(rejected).toMatchObject({
+      reason: "path",
+      message: expect.stringContaining(
+        "Contents/Resources/Assets.car (directory)",
+      ),
+    });
+  });
+});

@@ -143,17 +143,20 @@ it("retains the unnamed segment of a Mach-O object file", () => {
     "",
   ].join("\n");
   const load = parseOtoolLoadCommands(withOtoolMachHeader(objectSegment));
+  // The empty segname is the observed source value (mach-o/loader.h: object
+  // files put all sections in one unnamed segment), not missing data, so the
+  // normalized segment keeps it instead of a display label (morluto/rea#3875).
   expect(load.segments).toMatchObject([
-    { name: "unknown", sections: [{ segment: "__TEXT", name: "__text" }] },
+    { name: "", sections: [{ segment: "__TEXT", name: "__text" }] },
   ]);
-  // An all-NUL section name is printed the same way and stays "unknown".
+  // An all-NUL section name is printed the same way and is kept the same way.
   expect(
     parseOtoolLoadCommands(
       withOtoolMachHeader(
         objectSegment.replace("  sectname __text", "  sectname "),
       ),
     ).segments,
-  ).toMatchObject([{ sections: [{ segment: "__TEXT", name: "unknown" }] }]);
+  ).toMatchObject([{ sections: [{ segment: "__TEXT", name: "" }] }]);
   expect(() =>
     parseOtoolLoadCommands(
       withOtoolMachHeader(

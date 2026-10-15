@@ -460,7 +460,7 @@ const parseSegment = (
   block: string,
   fields: Readonly<Record<string, string | number | null>>,
 ): ParsedSegment => ({
-  name: nonEmptyName(stringField(fields, "segname")),
+  name: observedName(stringField(fields, "segname")),
   vm_address: hexField(fields, "vmaddr"),
   vm_size: numberField(fields, "vmsize"),
   file_offset: numberField(fields, "fileoff"),
@@ -488,8 +488,8 @@ const parseSections = (block: string): ParsedSection[] =>
       ])
         requireUniqueField(parsed, key);
       return {
-        segment: nonEmptyName(stringField(fields, "segname")),
-        name: nonEmptyName(stringField(fields, "sectname")),
+        segment: observedName(stringField(fields, "segname")),
+        name: observedName(stringField(fields, "sectname")),
         address: hexField(fields, "addr"),
         size: numberField(fields, "size"),
         file_offset: numberField(fields, "offset"),
@@ -544,9 +544,14 @@ const numeric = (value: string): number | null => {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 };
 
-/** Project an absent or empty Mach-O name as before: the "unknown" label. */
-const nonEmptyName = (name: string | null): string =>
-  name === null || name.length === 0 ? "unknown" : name;
+/**
+ * Keep an observed Mach-O name as printed, including the empty name: an
+ * MH_OBJECT file places every section in one unnamed segment, and an all-NUL
+ * section name is a known source value, not missing data (morluto/rea#3875).
+ * Only a field otool did not print at all falls back to the "unknown" label.
+ */
+const observedName = (name: string | null): string =>
+  name === null ? "unknown" : name;
 
 const stringField = (
   fields: Readonly<Record<string, string | number | null>>,

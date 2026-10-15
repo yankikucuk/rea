@@ -2803,6 +2803,47 @@ describe("exact HTML resource resolution", () => {
     ).toMatchObject({ resolution_status: "not-found", resolved_path: null });
   });
 
+  // A directory-form URL cannot load a regular file; the slash-stripped path
+  // must not resolve to one (morluto/rea#3882).
+  it.each([
+    ["trailing slash", "./target.js/", undefined],
+    ["trailing dot segment", "./target.js/.", undefined],
+    ["absolute trailing slash", "/target.js/", undefined],
+    ["trailing slash under a base href", "target.js/", "/assets/"],
+  ] as const)(
+    "keeps a directory-form HTML reference unresolved: %s",
+    (_name, declaredPath, htmlBaseHref) => {
+      const files = fileMap([
+        file("index.html", "root"),
+        file("target.js", "root"),
+        file("assets/target.js", "root"),
+      ]);
+      const resolved = resolve({
+        declaredPath,
+        sourcePath: "index.html",
+        context: "html-reference",
+        ...(htmlBaseHref === undefined ? {} : { htmlBaseHref }),
+        files,
+      });
+      expect(resolved).toMatchObject({
+        resolution_status: "not-found",
+        resolved_path: null,
+      });
+      expect(JSON.stringify(resolved)).toContain(
+        `resolves to directory ${htmlBaseHref === undefined ? "" : "assets/"}target.js, not an exact selected application file.`,
+      );
+      expect(
+        resolve({
+          declaredPath: declaredPath.replace(/\/\.?$/u, ""),
+          sourcePath: "index.html",
+          context: "html-reference",
+          ...(htmlBaseHref === undefined ? {} : { htmlBaseHref }),
+          files,
+        }),
+      ).toMatchObject({ resolution_status: "resolved" });
+    },
+  );
+
   it("prefers an exact extensionless resource and retains URL suffix handling", () => {
     const files = fileMap([
       file("renderer/index.html", "root"),

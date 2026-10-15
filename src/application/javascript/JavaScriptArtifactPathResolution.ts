@@ -1140,12 +1140,24 @@ const htmlCandidate = (
     return unresolvedCandidate("rejected", [
       "The HTML reference path percent-decodes to NUL or to bytes that are not UTF-8.",
     ]);
+  // Directory-form references (`app.js/`, `app.js/.`) cannot load a regular
+  // file, so every HTML branch applies the same guard the URL and module URL
+  // contexts use instead of mapping the slash-stripped path to a file
+  // (morluto/rea#3882).
+  const exactHtmlCandidate = (
+    candidate: string | CandidateResolution,
+  ): string | CandidateResolution =>
+    typeof candidate === "string"
+      ? exactUrlPathCandidate(declaredPath, candidate, "HTML")
+      : candidate;
   if (declaredPath.startsWith("/"))
-    return urlRelativeCandidate("", declaredPath);
+    return exactHtmlCandidate(urlRelativeCandidate("", declaredPath));
   if (base === undefined || base === null || base === "")
     return declaredPath === ""
       ? input.sourcePath
-      : urlRelativeCandidate(posix.dirname(input.sourcePath), declaredPath);
+      : exactHtmlCandidate(
+          urlRelativeCandidate(posix.dirname(input.sourcePath), declaredPath),
+        );
   // A local base href is a second untrusted path input; apply the same
   // admission rules a declared path gets so it cannot smuggle traversal or
   // separator syntax past canonicalization.
@@ -1170,8 +1182,10 @@ const htmlCandidate = (
       ? exactUrlPathCandidate(decodedBase, basePath, "HTML")
       : basePath;
   }
-  return urlPathCandidate(
-    applyUrlReference(urlBaseDirectory(baseState), declaredPath),
+  return exactHtmlCandidate(
+    urlPathCandidate(
+      applyUrlReference(urlBaseDirectory(baseState), declaredPath),
+    ),
   );
 };
 

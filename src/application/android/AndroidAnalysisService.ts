@@ -24,7 +24,7 @@ export class AndroidAnalysisService {
     input: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
-    if (options?.signal?.aborted === true)
+    if (options?.signal?.aborted)
       return err(new AnalysisCancelledError(operation));
     const request = androidRequestSchema.safeParse({ operation, input });
     if (!request.success)
@@ -41,8 +41,10 @@ export class AndroidAnalysisService {
     );
     if (!executed.ok) return executed;
     const execution = executed.value;
-    return ok(
-      createEvidence(execution.subject ?? target.value, execution.provider, {
+    const evidence = createEvidence(
+      execution.subject ?? target.value,
+      execution.provider,
+      {
         operation,
         parameters: jsonObjectSchema.parse(request.data.input),
         result: execution.result,
@@ -51,7 +53,16 @@ export class AndroidAnalysisService {
         locations: execution.locations,
         confidence:
           operation === "inspect_android_method" ? "derived" : "observed",
-      }),
+      },
     );
+    // The engine may finish before the abort reaches it, so the signal is
+    // rechecked once the Evidence exists; the completed observation travels
+    // with the cancellation as its partial observation instead of being
+    // classified as the success the caller no longer wants (morluto/rea#3927).
+    if (options?.signal?.aborted)
+      return err(
+        new AnalysisCancelledError(operation, { partialObservation: evidence }),
+      );
+    return ok(evidence);
   }
 }

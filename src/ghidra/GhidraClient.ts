@@ -81,8 +81,7 @@ const SESSION_ROOT = ghidraSessionRoot();
 
 /** Closed Java-bridge operation union callable after the exact handshake. */
 export type GhidraOperation =
-  | GhidraInventoryOperation
-  | GhidraFunctionOperation;
+  GhidraInventoryOperation | GhidraFunctionOperation;
 
 /** Owns an authenticated private Ghidra session with transport-bound mutation authority. */
 export class GhidraClient {
@@ -116,6 +115,8 @@ export class GhidraClient {
   #lastDiagnostics: Readonly<Record<string, JsonValue>> = {};
   #startupController: AbortController | undefined;
   #startPromise: Promise<GhidraStartResult> | undefined;
+  /** Callers still waiting on the shared startup; empty means nobody needs it. */
+  #startupInterest = new Set<symbol>();
   #ready = false;
   #closePromise: Promise<void> | undefined;
   readonly #failure = bindGhidraSessionFailure(
@@ -198,17 +199,14 @@ export class GhidraClient {
             ? result
             : this.start(signal),
         );
-      return this.#startPromise;
+      return this.#joinStartup(this.#startPromise, signal);
     }
     const controller = new AbortController();
-    const onAbort = (): void => controller.abort(signal?.reason);
-    if (signal?.aborted === true) onAbort();
-    else signal?.addEventListener("abort", onAbort, { once: true });
     const started = this.#start(controller.signal);
     this.#startupController = controller;
     this.#startPromise = started;
+    this.#startupInterest = new Set();
     const reset = (): void => {
-      signal?.removeEventListener("abort", onAbort);
       if (this.#startPromise === started) {
         this.#startPromise = undefined;
         if (this.#startupController === controller)
@@ -217,7 +215,6 @@ export class GhidraClient {
     };
     void started.then(
       (result) => {
-        signal?.removeEventListener("abort", onAbort);
         if (result.ok) this.#ready = true;
         else reset();
       },
@@ -229,7 +226,87 @@ export class GhidraClient {
         reset();
       },
     );
-    return started;
+    return this.#joinStartup(started, signal);
+  }
+
+  /**
+   * Wait for the shared startup on behalf of one caller. Each caller's own
+   * cancellation settles only that caller; the startup itself is abandoned
+   * when no caller remains interested, so a cancelled initiator cannot fail
+   * a concurrent request and a cancelled follower does not stay pending on
+   * the initiator's signal (morluto/rea#3983).
+   */
+  #joinStartup(
+    started: Promise<GhidraStartResult>,
+    signal: AbortSignal | undefined,
+  ): Promise<GhidraStartResult> {
+    const controller = this.#startupController;
+    const interest = this.#startupInterest;
+    const party = Symbol("ghidra-startup-waiter");
+    // Whether this caller's withdrawal leaves the startup without any
+    // interested caller, in which case the startup itself is abandoned and
+    // its own result (with cleanup and diagnostics) is reported.
+    const abandonIfUnwanted = (reason: unknown): boolean => {
+      interest.delete(party);
+      if (
+        interest.size !== 0 ||
+        controller === undefined ||
+        this.#startupController !== controller
+      )
+        return false;
+      controller.abort(reason);
+      return true;
+    };
+    if (signal?.aborted === true) {
+      return abandonIfUnwanted(signal.reason)
+        ? started
+        : Promise.resolve(
+            err(this.#failure("cancelled", "Ghidra startup was cancelled")),
+          );
+    }
+    interest.add(party);
+    return new Promise<GhidraStartResult>((resolve) => {
+      let settled = false;
+      const onAbort = (): void => {
+        if (settled || abandonIfUnwanted(signal?.reason)) return;
+        // Other callers still need the startup: only this wait ends.
+        settled = true;
+        resolve(
+          err(this.#failure("cancelled", "Ghidra startup was cancelled")),
+        );
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      started.then(
+        (result) => {
+          signal?.removeEventListener("abort", onAbort);
+          interest.delete(party);
+          if (settled) return;
+          settled = true;
+          // A startup stopped by a close or by other callers withdrawing is
+          // not this caller's cancellation; report a truthful start failure.
+          resolve(
+            !result.ok &&
+              result.error.kind === "cancelled" &&
+              signal?.aborted !== true
+              ? err(
+                  this.#failure(
+                    "start",
+                    "Ghidra startup was stopped before this request completed",
+                    result.error,
+                  ),
+                )
+              : result,
+          );
+        },
+        (cause: unknown) => {
+          signal?.removeEventListener("abort", onAbort);
+          interest.delete(party);
+          if (settled) return;
+          settled = true;
+          resolve(err(this.#failure("start", "Ghidra startup failed", cause)));
+        },
+      );
+    });
   }
 
   async #reportStartupWait(

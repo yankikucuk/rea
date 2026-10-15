@@ -567,6 +567,18 @@ export class AdbProvider {
     } catch (cause) {
       if (cause instanceof AdbConfigurationFailure)
         return adbConfigurationAvailability(cause);
+      // A probe deadline leaves the binary's usability unknown; report the
+      // client as unavailable for now rather than failing the readiness read.
+      if (cause instanceof AnalysisTimeoutError)
+        return {
+          status: "unavailable",
+          code: "runtime_unavailable",
+          reason: `The adb version probe did not finish within ${String(cause.timeoutMs)} ms`,
+          diagnostics: {
+            ...(cause.diagnostics ?? {}),
+            timeout_ms: cause.timeoutMs,
+          },
+        };
       throw cause;
     }
   }
@@ -699,6 +711,7 @@ export class AdbProvider {
       identity = await inspectAdbClient(selection, signal);
     } catch (cause) {
       if (cause instanceof AnalysisCancelledError) return err(cause);
+      if (cause instanceof AnalysisTimeoutError) return err(cause);
       if (cause instanceof AdbConfigurationFailure)
         return err(
           providerConfigurationRefusal(

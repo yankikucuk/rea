@@ -1,4 +1,7 @@
-import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisCancelledError,
+  AnalysisTimeoutError,
+} from "../domain/analysisErrorCore.js";
 import { isAbsolute } from "node:path";
 
 import {
@@ -42,9 +45,7 @@ export const resolveAdbBinary = (
 };
 
 export type AdbConfigurationFailureCode =
-  | "not_absolute"
-  | "binary_missing"
-  | "version_unresolved";
+  "not_absolute" | "binary_missing" | "version_unresolved";
 
 export class AdbConfigurationFailure extends Error {
   constructor(
@@ -117,6 +118,18 @@ export const inspectAdbClient = async (
     const failure = execFileOutputFailure(cause);
     if (signal?.aborted || failure?.code === "ABORT_ERR")
       throw new AnalysisCancelledError("inspect_adb_client", { cause });
+    // A probe stopped at its deadline is a timeout, not an unusable binary:
+    // keep its identity and the stop diagnostics so callers can retry
+    // instead of treating the client as unsupported (morluto/rea#3886).
+    if (failure?.code === "ETIMEDOUT")
+      throw new AnalysisTimeoutError("inspect_adb_client", VERSION_TIMEOUT_MS, {
+        cause,
+        diagnostics: {
+          selected_binary: selection.binary,
+          path_source: selection.pathSource,
+          stderr_excerpt: failure.stderr.slice(0, 512),
+        },
+      });
     if (failure?.code === "ENOENT")
       throw new AdbConfigurationFailure(
         "binary_missing",

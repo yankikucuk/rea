@@ -153,6 +153,10 @@ export const attestGhidraNativeLoadImage = async (
     );
   const snapshot = await client.readTargetSnapshot(undefined, signal);
   if (!snapshot.ok) return err(mapSessionError(snapshot.error));
+  // The request can be cancelled while the snapshot descriptor is closed;
+  // the completed read must not become a verified result (morluto/rea#3977).
+  if (isSignalAborted(signal))
+    return err(new AnalysisCancelledError(operation));
   if (snapshot.value.kind !== "captured")
     return err(
       new ProviderAdapterError("ghidra", operation, {

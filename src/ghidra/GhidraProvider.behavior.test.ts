@@ -2566,3 +2566,56 @@ describe("Ghidra queries after the owned provider is lost", () => {
     );
   });
 });
+
+// Cancellation that lands while the snapshot descriptor closes used to return
+// a verified load image (morluto/rea#3977).
+describe("Ghidra DOS load-image cancellation during snapshot cleanup", () => {
+  it.each([true, false])(
+    "returns typed cancellation after the snapshot read settles (abort=%s)",
+    async (abort) => {
+      const fixture = fixtureDosLoadImage();
+      const controller = new AbortController();
+      const factory: GhidraProviderClientFactory = () => ({
+        start: () => Promise.resolve(ok(sessionInfo())),
+        callTool: () =>
+          Promise.resolve(ok(jsonValueSchema.parse(fixture.observation))),
+        close: () => Promise.resolve(ok(null)),
+        readTargetSnapshot: () => {
+          if (abort) controller.abort();
+          return Promise.resolve(
+            ok({ kind: "captured", bytes: fixture.bytes }),
+          );
+        },
+      });
+      const ghidra = provider(installationHost(), factory);
+      const target: BinaryTarget = {
+        path: "/tmp/source-owned-fixture.exe",
+        sha256: fixture.sha256,
+        kind: "executable",
+        format: "dos-mz",
+        architecture: "x86",
+        availableArchitectures: ["x86"],
+      };
+      const profile = await ghidra.resolveAnalysisProfile(target);
+      if (!profile.ok || profile.value.profile === null)
+        throw new Error("Expected admitted profile");
+      const result = await ghidra
+        .createClient(target, profile.value.profile)
+        .execute(
+          "inspect_native_load_image",
+          {},
+          { signal: controller.signal },
+        );
+      if (abort)
+        expect(result).toMatchObject({
+          ok: false,
+          error: { _tag: "AnalysisCancelledError" },
+        });
+      else
+        expect(result).toMatchObject({
+          ok: true,
+          value: { result: { status: "verified" } },
+        });
+    },
+  );
+});

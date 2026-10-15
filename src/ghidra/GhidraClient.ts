@@ -81,8 +81,7 @@ const SESSION_ROOT = ghidraSessionRoot();
 
 /** Closed Java-bridge operation union callable after the exact handshake. */
 export type GhidraOperation =
-  | GhidraInventoryOperation
-  | GhidraFunctionOperation;
+  GhidraInventoryOperation | GhidraFunctionOperation;
 
 /** Owns an authenticated private Ghidra session with transport-bound mutation authority. */
 export class GhidraClient {
@@ -409,6 +408,9 @@ export class GhidraClient {
         );
       }
       if (!result.ok) throw result.error;
+      // Cancellation that arrived while the descriptor was closing is
+      // reported after the cleanup it waited for (morluto/rea#3977).
+      signal?.throwIfAborted();
       return result;
     } catch (cause: unknown) {
       if (cause instanceof RegularFileAdmissionFailure)

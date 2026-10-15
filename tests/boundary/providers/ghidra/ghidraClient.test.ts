@@ -373,6 +373,31 @@ describe("GhidraClient captured source snapshot", () => {
       error: { kind: "protocol" },
     });
   });
+
+  // A request cancelled while the snapshot descriptor closes is reported as
+  // cancelled after that cleanup, not as a completed read (morluto/rea#3977).
+  it("reports cancellation observed during snapshot descriptor close after the close succeeds", async () => {
+    const client = clientFor(new FixtureLauncher());
+    await expect(client.start()).resolves.toMatchObject({ ok: true });
+    const controller = new AbortController();
+    const originalClose = OwnedFileHandle.prototype.close;
+    const close = vi
+      .spyOn(OwnedFileHandle.prototype, "close")
+      .mockImplementationOnce(async function (this: OwnedFileHandle) {
+        controller.abort();
+        return originalClose.call(this);
+      });
+    try {
+      await expect(
+        client.readTargetSnapshot(undefined, controller.signal),
+      ).resolves.toMatchObject({ ok: false, error: { kind: "cancelled" } });
+      expect(close).toHaveBeenCalledTimes(1);
+      const closed = await client.close();
+      expect(closed.ok).toBe(true);
+    } finally {
+      close.mockRestore();
+    }
+  });
 });
 
 describe("GhidraClient", () => {

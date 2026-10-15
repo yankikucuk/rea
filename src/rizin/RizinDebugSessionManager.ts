@@ -1397,6 +1397,36 @@ export const assertRizinProcessStartTimeStable = (
 const readProcStartTime = async (pid: string): Promise<string> =>
   parseRizinProcStartTime(await readFile(`/proc/${pid}/stat`, "utf8"));
 
+/**
+ * Bytes received after the last NUL delimiter belong to a frame that has not
+ * completed. When the provider exits or the frame deadline passes before the
+ * delimiter arrives, those bytes are still command-time output and are kept as
+ * partial output instead of being dropped with the unfinished frame
+ * (morluto/rea#4015). The budget bounds them like any delivered frame.
+ */
+const pendingFrameOutput = (
+  session: RizinDebugSession,
+  output: readonly string[],
+  outputBytes: number,
+  maxCommandOutputBytes: number,
+): { readonly frames: readonly string[]; readonly invalidUtf8: boolean } => {
+  if (session.bufferedFrameBytes === 0)
+    return { frames: output, invalidUtf8: false };
+  const pendingBytes = Buffer.concat(
+    session.frameChunks,
+    session.bufferedFrameBytes,
+  );
+  const separatorBytes = output.length > 0 ? 1 : 0;
+  const pending = truncateUtf8(
+    pendingBytes.toString("utf8"),
+    maxCommandOutputBytes - outputBytes - separatorBytes,
+  );
+  return {
+    frames: pending.length === 0 ? output : [...output, pending],
+    invalidUtf8: !isUtf8(pendingBytes),
+  };
+};
+
 const waitForCommandFrames = async (
   session: RizinDebugSession,
   marker: string,
@@ -1411,9 +1441,16 @@ const waitForCommandFrames = async (
   const deadline = Date.now() + timeoutMs;
   const output: string[] = [];
   let outputInvalidUtf8 = false;
-  const commandTimeoutError = (): RizinCommandTimeoutError =>
-    createRizinCommandTimeoutError(output, outputInvalidUtf8);
   let outputBytes = 0;
+  const outputWithPending = () =>
+    pendingFrameOutput(session, output, outputBytes, maxCommandOutputBytes);
+  const commandTimeoutError = (): RizinCommandTimeoutError => {
+    const pending = outputWithPending();
+    return createRizinCommandTimeoutError(
+      pending.frames,
+      outputInvalidUtf8 || pending.invalidUtf8,
+    );
+  };
   let frameCount = 0;
   for (;;) {
     const remaining = deadline - Date.now();
@@ -1427,14 +1464,21 @@ const waitForCommandFrames = async (
         commandTimeoutError,
       );
     } catch (cause) {
-      if (cause instanceof AnalysisCancelledError)
+      if (cause instanceof AnalysisCancelledError) {
+        const pending = outputWithPending();
         throw new RizinCommandCancelledError(
-          output.join("\n"),
-          outputInvalidUtf8,
+          pending.frames.join("\n"),
+          outputInvalidUtf8 || pending.invalidUtf8,
           cause,
         );
-      if (cause instanceof RizinProcessExitError)
-        throw new RizinProcessExitError(output.join("\n"), outputInvalidUtf8);
+      }
+      if (cause instanceof RizinProcessExitError) {
+        const pending = outputWithPending();
+        throw new RizinProcessExitError(
+          pending.frames.join("\n"),
+          outputInvalidUtf8 || pending.invalidUtf8,
+        );
+      }
       throw cause;
     }
     outputInvalidUtf8 ||= received.invalidUtf8;

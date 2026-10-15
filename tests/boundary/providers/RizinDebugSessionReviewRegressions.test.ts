@@ -892,3 +892,48 @@ process.stdin.on("data", (chunk) => {
     process.kill(writerPid, "SIGKILL");
   },
 );
+
+// Bytes received after the last NUL delimiter are command-time output; losing
+// them when the provider exits or the frame deadline passes hid diagnostics
+// that a framed control retained (morluto/rea#4015).
+it.skipIf(process.platform === "win32").each([
+  ["exits", "unterminated-exit", "diagnostic before exit"],
+  ["exits after a framed diagnostic", "framed-exit", "diagnostic before exit"],
+  ["times out", "unterminated-timeout", "diagnostic before timeout"],
+] as const)(
+  "keeps pending unterminated command output when the provider %s",
+  async (_label, mode, expectedOutput) => {
+    const injected = createInjectedProcess({
+      onWrite: (text, control) => {
+        if (!/!echo (.+)\n/u.test(text)) return;
+        setImmediate(() => {
+          if (mode === "unterminated-timeout") {
+            control.output("diagnostic before timeout");
+            return;
+          }
+          control.output(
+            `diagnostic before exit${mode === "framed-exit" ? "\0" : ""}`,
+          );
+          control.exit();
+        });
+      },
+    });
+    const manager = createRizinTestManager(
+      { REA_RIZIN_COMMAND: "injected-rizin" },
+      { spawnProcess: injected.spawnProcess, frameTimeoutMs: 30 },
+    );
+    managers.push(manager);
+    const started = await manager.start({
+      path: "/tmp/fixture.bin",
+      inferior_tty: await rizinTestInferiorTty(),
+    });
+    if (!started.ok) throw started.error;
+    const result = await manager.execute(started.value.session_id, "dr");
+    if (!result.ok) throw result.error;
+    expect(result.value.result).toMatchObject({
+      output: expectedOutput,
+      completion_status: "unknown",
+    });
+    expect(result.value.result.output_invalid_utf8).toBeUndefined();
+  },
+);

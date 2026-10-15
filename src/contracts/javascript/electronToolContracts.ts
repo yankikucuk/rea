@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 import type { ToolContract } from "../toolContractTypes.js";
 import { toolContractMetadata } from "../toolEffects.js";
 import { electronFuseOutputSchemas } from "../toolOutputSchemaGroups.js";
@@ -30,9 +32,23 @@ import { JAVASCRIPT_RUNTIME_RECONCILIATION_EXAMPLE } from "./javascriptRuntimeRe
 
 const listOutputSchema = evidenceResultOf(electronTargetListSchema);
 const inspectionOutputSchema = evidenceResultOf(electronPageInspectionSchema);
-/** Caller-selected delivery of a completed JavaScript application analysis. */
+/**
+ * Caller-selected delivery of a completed JavaScript application analysis.
+ * The MCP contract requires an absolute input path: a relative value would
+ * select content by the server's working directory, which the caller does not
+ * choose (morluto/rea#3924). The CLI resolves its path argument before it
+ * reaches the shared domain schema, so that schema stays shape-neutral.
+ */
 export const analyzeJavaScriptApplicationRequestSchema =
   analyzeJavaScriptApplicationInputSchema.extend({
+    input_path: analyzeJavaScriptApplicationInputSchema.shape.input_path
+      .refine(isAbsolute, {
+        message:
+          "input_path must be an absolute local filesystem path (for example /Applications/Example.app/Contents/Resources/app.asar or C:\\apps\\app.asar)",
+      })
+      .describe(
+        "Absolute local filesystem path of the ASAR archive or extracted application directory; relative paths are rejected.",
+      ),
     detail: analysisDetailSchema,
   });
 const applicationOutputSchema = analysisDetailOutputSchemaOf(

@@ -47,7 +47,10 @@ The equivalent MCP input is:
 }
 ```
 
-`input_path` must be absolute. `format` accepts `auto`, `asar`, or `directory`.
+`input_path` must be absolute; the MCP tool rejects a relative value with an
+input error instead of resolving it against the server's working directory.
+The CLI resolves its path argument before analysis. `format` accepts `auto`,
+`asar`, or `directory`.
 `integrity_policy` accepts `fail` or `record-and-continue`; both CLI routes and
 the MCP tool default to `fail`.
 The result retains the canonical local path, root artifact digest, artifact

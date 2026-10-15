@@ -501,6 +501,12 @@ export class IdaSessionClient implements AnalysisClient {
             { kind: "artifact-path", path: this.target.path },
             ...runner.locations,
           ],
+          // The session's resolved profile is known provenance of the
+          // completed replies; a failed operation does not unknow it
+          // (morluto/rea#3992).
+          ...(this.profile === undefined
+            ? {}
+            : { analysisProfile: this.profile }),
         }),
       );
     }

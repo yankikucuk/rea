@@ -13,11 +13,72 @@ import { createIdaDiagnosticRedactor } from "./IdaDiagnosticRedactor.js";
 import { decodeIdaToolResult } from "./IdaMcpConnection.js";
 import type { AnalysisOperation } from "../application/AnalysisProvider.js";
 import { IdaSessionClient } from "./IdaSessionClient.js";
+import { createAnalysisProfile } from "../domain/analysisProfile.js";
+import { IDA_PROVIDER_IDENTITY } from "./IdaProviderCapabilities.js";
 
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
+});
+
+// A failed operation does not unknow the session's resolved profile; the
+// partial Evidence carries the same commitment as successful Evidence
+// (morluto/rea#3992).
+it("retains the resolved analysis profile on partial Evidence after a failed headless decompile", async () => {
+  const { root, target } = await createIdaTarget();
+  roots.push(root);
+  const producer = new RecordingIdaMcp(target, "headless");
+  const config = {
+    command: "fixture",
+    args: [],
+    env: {},
+    mode: "headless" as const,
+    timeoutMs: 1000,
+    workspaceRoot: root,
+  };
+  producer.beforeCall = async (name) => {
+    if (name === "decompile")
+      decodeIdaToolResult(
+        {
+          isError: true,
+          content: [{ type: "text", text: "Deliberate fixture failure" }],
+        },
+        undefined,
+        createIdaDiagnosticRedactor(config),
+      );
+  };
+  const profile = createAnalysisProfile(IDA_PROVIDER_IDENTITY, {
+    mode: "headless",
+    compatibility_profile: "database-supervisor",
+  });
+  const client = new IdaSessionClient(config, target, producer, profile);
+  try {
+    const success = await client.execute("procedure_address", {
+      procedure: "main",
+    });
+    if (!success.ok) throw success.error;
+    expect(success.value.analysisProfile).toEqual(profile);
+    const result = await client.execute("procedure_pseudo_code", {
+      procedure: "main",
+    });
+    if (result.ok) throw new Error("Expected the producer's tool error");
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "unreadable_output",
+      details: {
+        partial_observation: {
+          analysis_profile: profile,
+          normalized_result: {
+            status: "partial",
+            observations: [expect.objectContaining({ tool: "lookup_funcs" })],
+            target_binding: { status: "not_verified" },
+          },
+        },
+      },
+    });
+  } finally {
+    expect((await client.close()).ok).toBe(true);
+  }
 });
 
 it("preserves a rejected headless decompile diagnostic with completed lookup evidence and releases its owned worker", async () => {

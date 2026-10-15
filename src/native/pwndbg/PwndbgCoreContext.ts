@@ -157,6 +157,12 @@ export const inspectPwndbgCore = async ({
           requestPath,
         ],
         cwd: stage,
+        // The launcher replaces itself with the configured GDB through exec,
+        // so the live command is GDB, not Python, for most of the stage. Keep
+        // parent, process-group and run-token ownership across that exec
+        // instead of a command expectation that cleanup would reject
+        // (morluto/rea#4011); the basic decoder stage does the same.
+        expectedCommand: null,
         runId: `rea-recorded-core-debugger-${randomUUID()}`,
         hostEnvironment: {
           ...environment,

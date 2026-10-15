@@ -137,6 +137,8 @@ class FakeDevice implements Device {
   readonly process = { pid: 512, name: "fixture" } satisfies Process;
   readonly session = new FakeSession();
   resumed: number[] = [];
+  resumeGate: Promise<void> | undefined;
+  onResumeStarted: (() => void) | undefined;
   attachedTargets: Array<number | string> = [];
   resumeFailureCount = 0;
   readonly spawned: string[] = [];
@@ -155,6 +157,8 @@ class FakeDevice implements Device {
   }
 
   async resume(pid: number): Promise<void> {
+    this.onResumeStarted?.();
+    await this.resumeGate;
     if (this.resumeFailureCount > 0) {
       this.resumeFailureCount -= 1;
       throw new Error("target resume failed");
@@ -455,6 +459,43 @@ describe("FridaInstrumentationManager", () => {
     expect(manager.status(started.value.sessionId)?.state).toBe("running");
     await manager.closeAll();
     expect(bindings.device.session.isDetached()).toBe(true);
+  });
+
+  // A detach notification that arrives while the native resume settles is
+  // an observed session fact; the acknowledged resume must not revert the
+  // status to running (morluto/rea#3978).
+  it("keeps a detach observed during resume settlement in the session status", async () => {
+    const bindings = new FakeDeviceManager();
+    const manager = new FridaInstrumentationManager({
+      deviceManager: bindings,
+    });
+    const started = await manager.startSession({
+      mode: "spawn",
+      deviceId: "local",
+      program: "/tmp/fixture",
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const sessionId = started.value.sessionId;
+    let release = () => {};
+    bindings.device.resumeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const resumeStarted = new Promise<void>((resolve) => {
+      bindings.device.onResumeStarted = resolve;
+    });
+    const resuming = manager.resumeSession(sessionId);
+    await resumeStarted;
+    bindings.device.session.markDetached();
+    expect(manager.status(sessionId)?.state).toBe("detached");
+    release();
+    const resumed = await resuming;
+    expect(resumed.ok).toBe(true);
+    expect(bindings.device.resumed).toEqual([512]);
+    expect(manager.status(sessionId)?.state).toBe("detached");
+    expect(manager.status(sessionId)?.state).toBe("detached");
+    expect(manager.status(sessionId)?.targetResumeObserved).toBe(true);
+    await manager.closeAll();
   });
 
   it("removes a remote device after process discovery", async () => {

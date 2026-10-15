@@ -535,7 +535,10 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     }
     try {
       await managed.device.resume(managed.pid);
-      managed.state = "running";
+      // A detach observed while the native resume settled is a fact about
+      // the session; the acknowledged resume must not overwrite it
+      // (morluto/rea#3978).
+      managed.state = detachmentObserved(managed) ? "detached" : "running";
       managed.targetResumeObserved = true;
       managed.resumeAfterDetachPending = false;
       return ok(null);
@@ -1444,6 +1447,14 @@ const providerError = (
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
+
+/**
+ * Whether the native session was seen detached, through the subscribed
+ * notification or the provider's current state. Read through a call so a
+ * check that precedes an await is not narrowed away by the compiler.
+ */
+const detachmentObserved = (managed: ManagedSession): boolean =>
+  managed.state === "detached" || managed.session.isDetached();
 
 const cancelledOperation = (
   operation: string,

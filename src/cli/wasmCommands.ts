@@ -9,12 +9,16 @@ import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
+import { WABT_PROVIDER_IDENTITY } from "../wasm/WabtRelease.js";
+import type { WasmArtifactService } from "../application/wasm/WasmArtifactService.js";
 
 /** Resolve all caller-selected artifact paths through the shared workflow. */
 export const registerWasmCommands = (
   cli: CliInstance,
   logger: Logger,
   environment: Readonly<NodeJS.ProcessEnv>,
+  injectedService?: WasmArtifactService,
 ): void => {
   cli.command(CLI_COMMANDS.compareWasmInterfaces, {
     description:
@@ -39,7 +43,7 @@ export const registerWasmCommands = (
         }),
       ),
   });
-  const service = wasmArtifactModule.create(environment);
+  const service = wasmArtifactModule.create(environment, injectedService);
   cli.command(wasmArtifactModule.cliCommand, {
     description: "Inspect an explicit local WASM artifact with WABT",
     args: z.object({
@@ -55,14 +59,15 @@ export const registerWasmCommands = (
         .optional()
         .describe("Explicit local WASM candidates"),
     }),
+    // A failed workspace cleanup must not replace the completed Evidence or
+    // the primary diagnostics; the shared finalizer keeps them beside the
+    // cleanup failure (morluto/rea#3935).
     run: ({ args, options }) =>
-      withCommandCancellation(async (signal) => {
-        try {
-          return await logCliCommand(
-            logger,
-            wasmArtifactModule.cliCommand,
-            async () => {
-              const result = await service.inspect(
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, wasmArtifactModule.cliCommand, () =>
+          finishAnalysisCommand(
+            () =>
+              service.inspect(
                 {
                   path: resolve(args.path),
                   glue_paths: options.glue_paths?.map((path) => resolve(path)),
@@ -71,15 +76,12 @@ export const registerWasmCommands = (
                   ),
                 },
                 { signal },
-              );
-              return result.ok
-                ? result.value
-                : projectAnalysisError(result.error);
-            },
-          );
-        } finally {
-          await service.close();
-        }
-      }),
+              ),
+            service,
+            WABT_PROVIDER_IDENTITY.id,
+            wasmArtifactModule.contract.name,
+          ),
+        ),
+      ),
   });
 };

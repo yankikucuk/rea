@@ -409,3 +409,72 @@ it("forwards in-flight cancellation to the MCP call", async () => {
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.error).toBeInstanceOf(AnalysisCancelledError);
 });
+
+describe("JebProvider refusal identity", () => {
+  // A refused artifact is identified by the caller-selected path, never by
+  // the service URL the refusal travelled through (morluto/rea#3908).
+  it("identifies a refused project input by its path rather than the endpoint", async () => {
+    const refusal = {
+      success: false,
+      message: "The input file could not be processed",
+    };
+    const provider = providerWith(
+      scriptedConnection({
+        get_client_information: { success: true, version: "5.48.0" },
+        open_project: refusal,
+      }),
+    );
+    for (const path of ["/targets/Example.apk", "/targets/Other.apk"]) {
+      const result = await provider.execute({
+        operation: "open_jeb_project",
+        input: { path },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatchObject({
+        _tag: "AnalysisUnsupportedTargetError",
+        operation: "open_jeb_project",
+        path,
+        reason: "The input file could not be processed",
+      });
+      expect(result.error.message).not.toContain("127.0.0.1");
+    }
+    const otherEndpoint = new JebProvider({
+      environment: { REA_JEB_MCP_URL: "http://127.0.0.1:9999/mcp" },
+      connectionFactory: () =>
+        scriptedConnection({
+          get_client_information: { success: true, version: "5.48.0" },
+          open_project: refusal,
+        }),
+    });
+    const result = await otherEndpoint.execute({
+      operation: "open_jeb_project",
+      input: { path: "/targets/Example.apk" },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatchObject({ path: "/targets/Example.apk" });
+  });
+
+  it("identifies a refused decompilation by the selected item", async () => {
+    const provider = providerWith(
+      scriptedConnection({
+        get_client_information: { success: true, version: "5.48.0" },
+        decompile_code_item: {
+          success: false,
+          message: "The item address does not reference an existing code item",
+        },
+      }),
+    );
+    const result = await provider.execute({
+      operation: "decompile_jeb_item",
+      input: { item_address: "LNope;->x()V", item_kind: "method" },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisUnsupportedTargetError",
+      path: "LNope;->x()V",
+    });
+  });
+});

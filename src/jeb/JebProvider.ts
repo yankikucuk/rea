@@ -296,7 +296,7 @@ export class JebProvider implements JebAnalysisPort {
       signal,
     );
     const opened = openProject.parse(
-      this.#requireSuccess(payload, request.operation),
+      this.#requireSuccess(payload, request.operation, request.input.path),
     );
     const engine = await this.#engine(signal);
     const result = jebResultSchemas.open_jeb_project.parse({
@@ -370,7 +370,7 @@ export class JebProvider implements JebAnalysisPort {
       signal,
     );
     const decompiled = decompiledItem.parse(
-      this.#requireSuccess(payload, request.operation),
+      this.#requireSuccess(payload, request.operation, item_address),
     );
     const engine = await this.#engine(signal);
     const result = jebResultSchemas.decompile_jeb_item.parse({
@@ -393,7 +393,17 @@ export class JebProvider implements JebAnalysisPort {
     );
   }
 
-  #requireSuccess(payload: unknown, operation: JebOperation): unknown {
+  /**
+   * Admit a success envelope or raise the producer's refusal. A refusal names
+   * the caller-selected target when the operation has one; the service
+   * endpoint stands in only for engine-wide operations, so an artifact
+   * refusal cannot be attributed to the MCP URL (morluto/rea#3908).
+   */
+  #requireSuccess(
+    payload: unknown,
+    operation: JebOperation,
+    target: string = this.#endpoint.toString(),
+  ): unknown {
     if (typeof payload !== "object" || payload === null)
       throw new AnalysisProtocolError(
         "JEB MCP returned a non-object envelope; no observation can be established",
@@ -402,7 +412,7 @@ export class JebProvider implements JebAnalysisPort {
     if (success === false)
       throw new AnalysisUnsupportedTargetError(
         operation,
-        this.#endpoint.toString(),
+        target,
         refusalReason(payload, "The engine refused the request"),
       );
     if (success !== true)

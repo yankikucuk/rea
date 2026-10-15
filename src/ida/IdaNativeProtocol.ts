@@ -83,16 +83,8 @@ export const nativeXrefsSchema = z
   .array(modernXrefsSchema.element.extend({ error: nativeErrorSchema }))
   .length(1);
 
-/** Native regex failures carry an empty page, which must not imply absence. */
-export const nativeStringsSchema = modernStringsSchema
-  .extend({ error: z.string().optional() })
-  .transform((page) => {
-    if (page.error !== undefined)
-      throw new AnalysisProtocolError(
-        `Native IDA string search failed: ${page.error}`,
-      );
-    return page;
-  });
+/** Native regex failures carry the same explicit error field the modern page rejects. */
+export const nativeStringsSchema = modernStringsSchema;
 
 /**
  * Native regexes fold bytes, while REA's insensitive literal search folds

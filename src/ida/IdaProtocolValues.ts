@@ -135,10 +135,28 @@ export const legacyStringSchema = z.object({
   string: z.string(),
   length: z.number().int().nonnegative(),
 });
-export const modernStringsSchema = z.object({
-  matches: z.array(z.object({ addr: idaAddressSchema, string: z.string() })),
-  cursor: cursorSchema,
-});
+/**
+ * A string page can carry an explicit producer failure next to an empty match
+ * list and a terminal cursor. That page is a failed scan, not a complete
+ * search that found nothing, for the headless and native producers alike
+ * (morluto/rea#3990).
+ */
+export const modernStringsSchema = z
+  .object({
+    matches: z.array(z.object({ addr: idaAddressSchema, string: z.string() })),
+    cursor: cursorSchema,
+    error: z
+      .string()
+      .nullish()
+      .transform((value) => value ?? undefined),
+  })
+  .transform((page) => {
+    if (page.error !== undefined)
+      throw new AnalysisProtocolError(
+        `IDA string search failed: ${page.error}`,
+      );
+    return page;
+  });
 export const legacyXrefsSchema = z.array(
   z.object({
     address: idaAddressSchema,

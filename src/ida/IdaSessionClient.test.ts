@@ -153,6 +153,35 @@ describe("headless IDA producer pagination", () => {
   });
 });
 
+// An explicit producer error on a string page is a failed scan, not a complete
+// empty search (morluto/rea#3990).
+describe("headless IDA string page failures", () => {
+  it.each([
+    ["embedded error", "Search fixture failed", false],
+    ["clean empty page", undefined, true],
+  ] as const)(
+    "treats a terminal empty page with %s accordingly",
+    async (_name, error, succeeds) => {
+      const { producer, client } = await fixture("headless");
+      producer.overrideCall = (name) =>
+        name === "find_regex"
+          ? {
+              matches: [],
+              cursor: { done: true },
+              ...(error === undefined ? {} : { error }),
+            }
+          : undefined;
+      const found = await client.execute("search_strings", {
+        pattern: "needle",
+      });
+      expect(found.ok).toBe(succeeds);
+      if (found.ok) expect(found.value.result).toEqual([]);
+      else expect(found.error.message).toContain("Search fixture failed");
+      await client.close();
+    },
+  );
+});
+
 describe("attached IDA readiness and queued cancellation", () => {
   it("allows ready-only work after an attached provider has initialized", async () => {
     const { producer, client } = await fixture("attached");

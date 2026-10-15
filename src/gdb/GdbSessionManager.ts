@@ -150,13 +150,16 @@ export const gdbThreadGroupPids = (
       quoted = true;
       continue;
     }
-    if (character === "[") squareDepth += 1;
-    else if (character === "]") {
+    if (character === "[") {
+      // A nested `groups=` field is an unsupported recursive inventory. Only
+      // an unquoted field name counts: the same text inside a quoted value
+      // such as an executable pathname is literal (morluto/rea#3993).
+      if (mi.startsWith("groups=", index - "groups=".length)) return undefined;
+      squareDepth += 1;
+    } else if (character === "]") {
       squareDepth -= 1;
       if (squareDepth === 0) {
         if (objectDepth !== 0) return undefined;
-        const body = mi.slice(start, index);
-        if (body.includes("groups=[")) return undefined;
         return pids;
       }
     } else if (character === "{") {

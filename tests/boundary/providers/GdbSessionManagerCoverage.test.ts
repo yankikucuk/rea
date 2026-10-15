@@ -54,8 +54,20 @@ it.each([
   ],
   [
     "nested groups field",
-    '1^done,groups=[{id="i1",extra="groups=["}]',
+    '1^done,groups=[{id="i1",groups=[{id="i2",pid="123"}]}]',
     undefined,
+  ],
+  // Marker text inside a quoted value is literal, not a nested field
+  // (morluto/rea#3993).
+  [
+    "literal groups marker in a quoted executable",
+    '1^done,groups=[{id="i1",type="process",executable="fixture/groups=[.out"}]',
+    0,
+  ],
+  [
+    "literal groups marker next to a live pid",
+    '1^done,groups=[{id="i1",pid="123",executable="/tmp/groups=[.out"}]',
+    1,
   ],
   ["negative object depth", "1^done,groups=[}]", undefined],
   ["unclosed list", '1^done,groups=[{id="i1"}', undefined],
@@ -690,6 +702,33 @@ it("converts non-Error queue cancellation failures into a tagged error", async (
     error: { _tag: "AnalysisCancelledError" },
   });
   expect((await manager.close(started.value.session_id)).ok).toBe(true);
+});
+
+// Marker text inside a quoted executable pathname is literal; it must not be
+// read as a nested groups field that blocks closing an idle session
+// (morluto/rea#3993).
+it("closes an idle session whose quoted executable contains the groups marker", async () => {
+  const commands: string[] = [];
+  const fake = createFakeSpawner((child, token, command) => {
+    commands.push(command);
+    if (command.includes("list-thread-groups"))
+      child.stdout.write(
+        `${token}^done,groups=[{id="i1",type="process",executable="fixture/groups=[.out"}]\n`,
+      );
+    else if (command.includes("gdb-exit")) {
+      child.stdout.write(`${token}^exit\n`);
+      queueMicrotask(() => child.exit(0, null));
+    } else child.stdout.write(`${token}^done\n`);
+  });
+  const manager = managerWithFakeSpawner(fake.spawnProcess);
+  const started = await expectGdbSessionStarted(manager);
+  const closed = await manager.close(started.value.session_id);
+  expect(closed).toMatchObject({
+    ok: true,
+    value: { target_state: "none_observed" },
+  });
+  expect(commands).toContain("-gdb-exit");
+  expect(manager.status(started.value.session_id)).toBeUndefined();
 });
 
 it("waits for GDB stdout settlement after a no-inferior exit without re-entering MI", async () => {
@@ -1512,8 +1551,7 @@ it.each([
           return Reflect.apply(originalWrite, stdin, arguments_);
         if (failure === "callback") {
           const callback = arguments_[2] as
-            | ((error?: Error | null) => void)
-            | undefined;
+            ((error?: Error | null) => void) | undefined;
           queueMicrotask(() =>
             callback?.(new Error("simulated callback error")),
           );

@@ -300,3 +300,32 @@ describe("private display probe output settlement", () => {
     },
   );
 });
+
+describe("Linux private display probe ownership", () => {
+  it("carries a probe whose stop failed to the caller with its timeout reason", async () => {
+    const probe = {
+      strategy: "direct" as const,
+      pid: 4242,
+      stop: async () => ({ status: "killed" }) as const,
+    };
+    const runProbe: LinuxPrivateDisplayProbeRunner = () =>
+      Promise.resolve({
+        outcome: "timed-out",
+        exitCode: null,
+        stderr: "",
+        stderrBytes: 0,
+        cleanupIncomplete: true,
+        retainedProbe: probe,
+      });
+    const selection = await selectLinuxPrivateDisplayStrategy({
+      helperPath,
+      runProbe,
+    });
+    expect(selection).toMatchObject({
+      ok: false,
+      diagnostic: { reason: "probe_timeout" },
+    });
+    if (selection.ok) throw new Error("expected an unavailable selection");
+    expect(selection.retainedProbes).toEqual([probe]);
+  });
+});

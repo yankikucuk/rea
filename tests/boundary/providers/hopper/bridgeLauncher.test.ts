@@ -64,6 +64,103 @@ const options = (launcherPath: string): HopperApplicationLauncherOptions => ({
   demoHelperPath: "/rea/hopper-demo-x11.py",
 });
 
+// A timed-out private-display probe whose owned process group could not be
+// stopped used to disappear behind the startup failure: close succeeded and
+// never retried the stop while the probe stayed alive (morluto/rea#3985).
+it("retains a timed-out probe whose stop failed and retries it through client cleanup", async () => {
+  const directory = await createTestTempDirectory("rea-probe-retained-");
+  const targetPath = join(directory, "target");
+  await writeFile(targetPath, "source-owned target");
+  let stopCalls = 0;
+  let stopSucceeds = false;
+  const probe = {
+    strategy: "direct" as const,
+    pid: 4242,
+    stop: async () => {
+      stopCalls += 1;
+      return stopSucceeds
+        ? ({ status: "killed" } as const)
+        : ({
+            status: "incomplete",
+            reason: "fixture first cleanup failure",
+          } as const);
+    },
+  };
+  const launcher = new HopperApplicationLauncher(
+    { ...options(process.execPath), targetPath },
+    {
+      verifyLinuxLauncher: vi.fn(async () =>
+        err(new HopperReleaseError("cleanup_failed", "unused")),
+      ),
+      retryPublisherCleanup: async () => undefined,
+      selectPrivateDisplay: async () => ({
+        ok: false,
+        strategy: "unavailable",
+        exitCode: 70,
+        diagnostic: {
+          component: "hopper_private_display",
+          operation: "probe",
+          status: "error",
+          failure_code: "private_display_unavailable",
+          reason: "probe_timeout",
+          socket_directory: "/tmp/.X11-unix",
+          socket_directory_mode: null,
+          mount_read_only: null,
+          effective_socket_directory_mode: null,
+          effective_mount_read_only: null,
+          wsl: false,
+          strategy: "unavailable",
+          fallback_reason: null,
+          xvfb_stderr_bytes: 0,
+        },
+        retainedProbes: [probe],
+      }),
+    },
+  );
+  const client = new HopperClient({ launcher, startupTimeoutMs: 5_000 });
+  try {
+    const started = await client.start();
+    expect(started).toMatchObject({
+      ok: false,
+      error: {
+        cleanupIncomplete: true,
+        cleanupResources: ["hopper-private-display-probe"],
+      },
+    });
+    if (started.ok) throw new Error("Expected a retained probe failure");
+    expect(projectAnalysisError(started.error)).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        resources: ["hopper-private-display-probe"],
+        diagnostics: {
+          primary_error: {
+            code: "provider_unavailable",
+            details: { diagnostics: { reason: "probe_timeout" } },
+          },
+        },
+      },
+    });
+    expect(stopCalls).toBe(1);
+    expect(await client.start()).toMatchObject({
+      ok: false,
+      error: { cleanupIncomplete: true },
+    });
+    expect(await client.close()).toMatchObject({
+      ok: false,
+      error: { cleanupResources: ["hopper-private-display-probe"] },
+    });
+    expect(stopCalls).toBe(2);
+    stopSucceeds = true;
+    expect(await client.close()).toEqual({ ok: true, value: null });
+    expect(stopCalls).toBe(3);
+    expect(await client.close()).toEqual({ ok: true, value: null });
+    expect(stopCalls).toBe(3);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("retains cancelled verification cleanup through client shutdown and retries it", async () => {
   const directory = await createTestTempDirectory("rea-publisher-cancel-");
   const targetPath = join(directory, "target");

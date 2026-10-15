@@ -20,6 +20,7 @@ import {
 import { waitForAbortableDelay } from "../process/ProviderDeadline.js";
 import {
   selectLinuxPrivateDisplayStrategy,
+  type RetainedPrivateDisplayProbe,
   type LinuxPrivateDisplayRunnableStrategy,
   type LinuxPrivateDisplaySelection,
 } from "./LinuxPrivateDisplayProbe.js";
@@ -143,6 +144,9 @@ export interface HopperApplicationLauncherDependencies {
  * macOS LaunchServices may create or reuse.
  */
 export class HopperApplicationLauncher implements BridgeLauncher {
+  /** Private-display probes whose owned process group outlived a failed stop. */
+  #retainedProbes: RetainedPrivateDisplayProbe[] = [];
+
   constructor(
     readonly options: HopperApplicationLauncherOptions,
     readonly dependencies: HopperApplicationLauncherDependencies = {},
@@ -150,6 +154,8 @@ export class HopperApplicationLauncher implements BridgeLauncher {
 
   async cleanup(): Promise<Result<null, ProviderCleanupError>> {
     if (!usesLinuxDemo(this.options)) return ok(null);
+    const probes = await this.#stopRetainedProbes();
+    if (!probes.ok) return probes;
     try {
       await (
         this.dependencies.retryPublisherCleanup ??
@@ -416,6 +422,35 @@ export class HopperApplicationLauncher implements BridgeLauncher {
     }
   }
 
+  /**
+   * Retry the stop of every retained probe. A probe leaves ownership only
+   * when its stop is verified; the rest stay reported (morluto/rea#3985).
+   */
+  async #stopRetainedProbes(): Promise<Result<null, ProviderCleanupError>> {
+    if (this.#retainedProbes.length === 0) return ok(null);
+    const remaining: RetainedPrivateDisplayProbe[] = [];
+    const reasons: string[] = [];
+    for (const probe of this.#retainedProbes) {
+      const stopped = await probe.stop();
+      if (stopped.status === "incomplete") {
+        remaining.push(probe);
+        reasons.push(
+          `${probe.strategy} probe${probe.pid === undefined ? "" : ` (pid ${String(probe.pid)})`}: ${stopped.reason}`,
+        );
+      }
+    }
+    this.#retainedProbes = remaining;
+    return remaining.length === 0
+      ? ok(null)
+      : err(
+          new ProviderCleanupError(
+            "hopper",
+            [HOPPER_PRIVATE_DISPLAY_PROBE_RESOURCE],
+            { reason: reasons.join("; ") },
+          ),
+        );
+  }
+
   async #privateDisplay(signal: AbortSignal | undefined): Promise<
     | {
         readonly ok: true;
@@ -435,6 +470,7 @@ export class HopperApplicationLauncher implements BridgeLauncher {
       environment: this.options.environment,
       ...(signal === undefined ? {} : { signal }),
     });
+    if (!selection.ok) this.#retainedProbes.push(...selection.retainedProbes);
     if (signal?.aborted === true)
       return { ok: false, error: new HopperCancelledError() };
     return selection.ok
@@ -562,6 +598,9 @@ const hopperLaunchFailure = (
   signal?.aborted === true
     ? new HopperCancelledError()
     : new HopperStartError({ cause });
+
+/** Owned resource named when a private-display probe outlives its failed stop. */
+const HOPPER_PRIVATE_DISPLAY_PROBE_RESOURCE = "hopper-private-display-probe";
 
 /** Select the publisher-verified demo adapter from the caller's explicit launch mode. */
 export const usesLinuxDemo = (

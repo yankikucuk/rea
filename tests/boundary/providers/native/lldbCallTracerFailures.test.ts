@@ -51,6 +51,7 @@ const configSchema = z.object({
   result_path: z.string(),
   observation_path: z.string(),
   stdout_capture_path: z.string(),
+  stderr_capture_path: z.string(),
 });
 
 const configFromArguments = async (arguments_: readonly string[]) => {
@@ -63,8 +64,43 @@ const configFromArguments = async (arguments_: readonly string[]) => {
   return { config: configSchema.parse(raw), configPath: match[1] };
 };
 
+const TRACED_RESULT = {
+  status: "traced",
+  version: "lldb-fixture",
+  pid: 99,
+  outcome: "exited",
+  exit_status: 0,
+  exit_description: null,
+  killed: false,
+  terminated: true,
+  target_identity: {
+    loaded_image_sha256: null,
+    selected_file_sha256: request.expectedSha256,
+    file_device: "1",
+    file_inode: "2",
+    module_path: request.executable,
+    module_uuid: "fixture-uuid",
+    stable: true,
+  },
+  elapsed_ms: 1,
+  breakpoints: [{ index: 0, location_count: 1, locations: [] }],
+  events: [EVENT],
+  resource_limit_reached: false,
+  target_output: {
+    stdout_bytes: 15,
+    stderr_bytes: 0,
+    stdout_truncated: false,
+    stderr_truncated: false,
+    stdout_complete: true,
+    stderr_complete: true,
+  },
+  other_stops: [],
+};
+
 const fixtureTracer = (
-  outcome: "cancelled" | "integrity-error-cleanup-failure",
+  outcome:
+    "cancelled" | "integrity-error-cleanup-failure" | "aborted-after-exit",
+  controller = new AbortController(),
 ) => {
   let configPath: string | undefined;
   const tracer = new LldbCallTracer(
@@ -78,6 +114,19 @@ const fixtureTracer = (
         `${JSON.stringify({ kind: "event", event: EVENT })}\n`,
       );
       await writeFile(config.stdout_capture_path, "captured prefix");
+      if (outcome === "aborted-after-exit") {
+        await writeFile(config.result_path, JSON.stringify(TRACED_RESULT));
+        await writeFile(config.stderr_capture_path, "");
+        controller.abort();
+        return {
+          kind: "exited",
+          targetLaunched: false,
+          exitCode: 0,
+          output: "",
+          targetIdentity: undefined,
+          cleanupFailure: undefined,
+        };
+      }
       if (outcome === "integrity-error-cleanup-failure")
         await writeFile(
           config.result_path,
@@ -196,6 +245,29 @@ describe("LLDB failure retention through the production tracer", () => {
         working_directory: null,
       },
     });
+  });
+
+  // The request can be cancelled after LLDB exited, while the result and
+  // captures are read; the run must not publish success (morluto/rea#4009).
+  it("reports cancellation observed after LLDB exit with the completed run retained", async () => {
+    const controller = new AbortController();
+    const fixture = fixtureTracer("aborted-after-exit", controller);
+    const result = await fixture.tracer.trace(request, controller.signal);
+    await fixture.runtimeRoot();
+    if (result.ok) throw new Error("expected cancellation");
+    expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+    expect(result.error.partialObservation).toMatchObject({
+      coverage: { status: "partial", reason: "cancelled" },
+      events: [EVENT],
+      process: { stdout: { text: "captured prefix" } },
+    });
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cancelled",
+    });
+    const control = fixtureTracer("aborted-after-exit");
+    const completed = await control.tracer.trace(request);
+    if (!completed.ok) throw completed.error;
+    expect(completed.value.run.outcome).toBe("exited");
   });
 
   it("preserves bridge integrity failure type when process-group cleanup also fails", async () => {

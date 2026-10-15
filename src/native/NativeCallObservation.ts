@@ -21,7 +21,11 @@ import {
   type NativeCallObservationResult,
 } from "../domain/native/nativeCallObservation.js";
 import { err, ok, type Result } from "../domain/result.js";
-import type { NativeCallTrace, NativeCallTracer } from "./LldbCallTracer.js";
+import {
+  partialObservationFromTrace,
+  type NativeCallTrace,
+  type NativeCallTracer,
+} from "./LldbCallTracer.js";
 
 const OPERATION = "observe_native_calls";
 
@@ -78,18 +82,33 @@ export const observeNativeCalls = async (
     );
   if (signal?.aborted === true)
     return err(new AnalysisCancelledError(OPERATION));
-  const traced = await tracer.trace(
-    {
-      executable: target.path,
-      architecture: target.architecture,
-      expectedSha256: target.sha256,
-      input: parsed.data,
-    },
-    signal,
-  );
+  const traceRequest = {
+    executable: target.path,
+    architecture: target.architecture,
+    expectedSha256: target.sha256,
+    input: parsed.data,
+  };
+  const traced = await tracer.trace(traceRequest, signal);
   if (!traced.ok) return traced;
+  // A tracer can complete after the caller cancelled; the completed trace is
+  // retained as the partial observation of a cancelled run rather than
+  // published as success (morluto/rea#4009).
+  if (cancelledDuringTrace(signal))
+    return err(
+      new AnalysisCancelledError(OPERATION, {
+        partialObservation: partialObservationFromTrace(
+          traceRequest,
+          traced.value,
+        ),
+      }),
+    );
   return ok(projectNativeCalls(target, parsed.data, traced.value));
 };
+
+// Read through a call so the earlier pre-trace check does not narrow the
+// signal's state across the await.
+const cancelledDuringTrace = (signal: AbortSignal | undefined): boolean =>
+  signal?.aborted === true;
 
 const isAbortError = (cause: unknown): boolean =>
   cause instanceof Error && cause.name === "AbortError";

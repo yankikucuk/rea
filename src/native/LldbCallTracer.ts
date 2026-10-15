@@ -448,14 +448,21 @@ export class LldbCallTracer implements NativeCallTracer {
             reason: cleanupDetails.join("; "),
             resources: await lldbCleanupResources(retained),
           };
-    const partialReason =
-      exited.kind === "cancelled"
-        ? "cancelled"
-        : exited.kind === "timeout"
-          ? "timeout"
-          : exited.cleanupFailure !== undefined
-            ? "cleanup-failure"
-            : "tracer-failure";
+    // The request can be cancelled after LLDB has already exited, while the
+    // result and captures are still being read. The run then finishes its
+    // owned cleanup but must report cancellation with what it observed
+    // instead of publishing complete Evidence (morluto/rea#4009). A deadline
+    // that already fired stays a timeout.
+    const cancelled =
+      exited.kind === "cancelled" ||
+      (exited.kind !== "timeout" && signal?.aborted === true);
+    const partialReason = cancelled
+      ? "cancelled"
+      : exited.kind === "timeout"
+        ? "timeout"
+        : exited.cleanupFailure !== undefined
+          ? "cleanup-failure"
+          : "tracer-failure";
     const getPartialObservation = (
       reason: NativeCallPartialObservation["coverage"]["reason"] = partialReason,
     ): Promise<NativeCallPartialObservation> =>
@@ -468,7 +475,7 @@ export class LldbCallTracer implements NativeCallTracer {
         version: output?.status === "traced" ? output.version : null,
         reason,
       });
-    if (exited.kind === "cancelled")
+    if (cancelled)
       return err(
         new AnalysisCancelledError(OPERATION, {
           ...(lifecycleCleanup === undefined
@@ -689,7 +696,8 @@ const partialNativeObservation = async (options: {
   });
 };
 
-const partialObservationFromTrace = (
+/** Retain a completed trace as the partial observation of a run that did not publish. */
+export const partialObservationFromTrace = (
   request: Parameters<NativeCallTracer["trace"]>[0],
   trace: NativeCallTrace,
 ): NativeCallPartialObservation =>

@@ -89,7 +89,12 @@ const registrationSchema = z
     type: z.string().optional(),
     transport: z.string().optional(),
     serverName: z.string().optional(),
-    tools: z.array(z.string()).optional(),
+    // Copilot CLI lists tool names; Codex keys per-tool tables such as
+    // `[mcp_servers.rea.tools.NAME] approval_mode = "approve"` under the same
+    // field (morluto/rea#3862). Either shape is a valid registration.
+    tools: z
+      .union([z.array(z.string()), z.record(z.string(), z.unknown())])
+      .optional(),
     disabled: z.boolean().optional(),
     enabled: z.boolean().optional(),
   })

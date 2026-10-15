@@ -747,6 +747,12 @@ const clientConfigurationDesired = (
     registration.enabledTools = previous.enabledTools;
   return {
     ...registration,
+    // Codex keeps caller-selected per-tool approval policy in
+    // `[mcp_servers.rea.tools.NAME]` tables. REA owns the launcher, not that
+    // policy, so a refresh carries the table over (morluto/rea#3863).
+    ...(client.name === "codex" && isCodexToolsTable(previous)
+      ? { tools: previous.tools }
+      : {}),
     ...(client.name === "codex" || client.name === "grok_build"
       ? {
           startup_timeout_sec:
@@ -775,6 +781,16 @@ const clientConfigurationDesired = (
       : {}),
   };
 };
+
+const isCodexToolsTable = (
+  registration: unknown,
+): registration is { readonly tools: Readonly<Record<string, unknown>> } =>
+  typeof registration === "object" &&
+  registration !== null &&
+  "tools" in registration &&
+  typeof registration.tools === "object" &&
+  registration.tools !== null &&
+  !Array.isArray(registration.tools);
 
 const positiveTimeout = (
   registration: unknown,

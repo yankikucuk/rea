@@ -198,6 +198,34 @@ describe("Codex MCP tool deadlines", () => {
     expect(configured).toContain("startup_timeout_sec = 5");
     expect(configured).toContain("tool_timeout_sec = 10");
   });
+
+  // REA owns the Codex launcher, not the caller's per-tool approval policy
+  // (morluto/rea#3863).
+  it("keeps caller-selected Codex per-tool approval tables across a refresh", async () => {
+    const home = await createTestTempDirectory("rea-codex-tool-approval-");
+    roots.push(home);
+    const configPath = join(home, ".codex/config.toml");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      '[mcp_servers.rea]\ncommand = "old-rea"\nargs = ["mcp"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 600\n\n[mcp_servers.rea.tools.binary_session]\napproval_mode = "approve"\n',
+    );
+    expect(
+      await configureClientConfiguration(
+        { name: "codex", configPath, format: "toml" },
+        {},
+        ["rea", "mcp"],
+      ),
+    ).toMatchObject({ status: "configured" });
+    const configured = parseToml(await readFile(configPath, "utf8")) as {
+      mcp_servers: { rea: Record<string, unknown> };
+    };
+    expect(configured.mcp_servers.rea).toMatchObject({
+      command: "rea",
+      args: ["mcp"],
+      tools: { binary_session: { approval_mode: "approve" } },
+    });
+  });
 });
 
 describe("client configuration filesystem lifecycle", () => {

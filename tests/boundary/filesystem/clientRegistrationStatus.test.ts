@@ -134,6 +134,33 @@ describe("client registration launcher identity", () => {
     ]);
   });
 
+  // Codex keys per-tool approval policy under `tools`, which is a table and not
+  // the list of names another client uses there (morluto/rea#3862).
+  it("keeps a Codex registration aligned when it carries per-tool approval tables", async () => {
+    const home = await createTestTempDirectory("rea-codex-tool-approval-");
+    await mkdir(join(home, ".codex"));
+    await writeFile(
+      join(home, ".codex/config.toml"),
+      `[mcp_servers.rea]\ncommand = "npx"\nargs = ["-y", "${PRODUCT_IDENTITY.registrationPackageSpecifier}", "mcp"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 600\n\n[mcp_servers.rea.tools.binary_session]\napproval_mode = "approve"\n`,
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, "/current/rea");
+
+    expect(statuses).toEqual([
+      expect.objectContaining({
+        client: "codex",
+        state: "aligned",
+        command: [
+          "npx",
+          "-y",
+          PRODUCT_IDENTITY.registrationPackageSpecifier,
+          "mcp",
+        ],
+        remediation: null,
+      }),
+    ]);
+  });
+
   it("reports an unpinned bunx registration as stale rather than aligned", async () => {
     const home = await createTestTempDirectory("rea-bunx-unpinned-");
     await writeFile(
